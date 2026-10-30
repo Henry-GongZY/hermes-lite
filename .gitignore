@@ -1,0 +1,11 @@
+build/
+examples/esp32/build/
+examples/esp32/sdkconfig
+examples/esp32/sdkconfig.old
+examples/esp32/dependencies.lock
+history.jsonl
+hl_log*.txt
+*.img
+managed_components/
+.vscode/
+.DS_Store

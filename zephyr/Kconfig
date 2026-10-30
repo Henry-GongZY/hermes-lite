@@ -1,0 +1,10 @@
+menu "Hermes Lite core"
+
+config HL_PLATFORM_ZEPHYR
+	bool "Compile the Zephyr platform backend (zsock + mbedTLS + littlefs)"
+	default y
+	help
+	  Real HTTPS/filesystem backend for Zephyr targets. The native_sim
+	  sample runs with an in-tree mock platform; real boards use this.
+
+endmenu

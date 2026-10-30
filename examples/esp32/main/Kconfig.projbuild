@@ -1,0 +1,19 @@
+menu "Hermes Lite"
+
+    config HL_API_URL
+        string "LLM endpoint (chat completions URL)"
+        default "https://www.sui-xiang.net/v1/chat/completions"
+
+    config HL_API_KEY
+        string "LLM API bearer key"
+        default ""
+
+    config HL_MODEL
+        string "Model name"
+        default "gpt-6.1-terra"
+
+    config HL_TLS_INSECURE
+        bool "Skip TLS certificate verification (insecure; needs CONFIG_ESP_TLS_INSECURE)"
+        default n
+
+endmenu

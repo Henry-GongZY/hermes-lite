@@ -1,0 +1,4 @@
+name: hermes_core
+build:
+  cmake: .
+  kconfig: zephyr/Kconfig
