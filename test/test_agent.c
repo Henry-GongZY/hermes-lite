@@ -29,6 +29,8 @@ static char *captured_req[MAX_CAP];
 static int n_captured;
 static const char *scripted[MAX_CAP];
 static int n_scripted, script_pos;
+static int fail_count;   /* transport failures before a scripted response */
+static int fail_code = -1; /* what http_post returns while failing */
 static const char *stream_script[MAX_CAP];
 static int n_stream, stream_pos;
 
@@ -50,6 +52,8 @@ static void mock_reset(void)
     n_captured = 0;
     n_scripted = 0;
     script_pos = 0;
+    fail_count = 0;
+    fail_code = -1;
     n_stream = 0;
     stream_pos = 0;
     frag_log[0] = 0;
@@ -71,6 +75,10 @@ static int mock_http_post(const char *url, const char *auth, const char *body,
     (void)body_len;
     assert(n_captured < MAX_CAP);
     captured_req[n_captured++] = strdup(body);
+    if (fail_count > 0) {
+        fail_count--;
+        return fail_code;
+    }
     if (script_pos >= n_scripted)
         return -1;
     const char *r = scripted[script_pos++];
@@ -486,6 +494,38 @@ static void test_stream_fallback(void)
     hl_agent_free(a);
 }
 
+static void test_http_retry(void)
+{
+    mock_reset();
+    fail_count = 2; /* two transport failures, then the scripted reply */
+    mock_script(resp_reply("recovered after retries"));
+    hl_platform_t p = test_platform();
+    hl_config_t cfg = base_cfg();
+    hl_agent_t *a = hl_agent_new(&cfg, &p, NULL, 0);
+    char reply[512];
+    int r = hl_agent_chat(a, "hello", reply, sizeof reply);
+    CHECK(r == 0, "retry: chat ok");
+    CHECK(!strcmp(reply, "recovered after retries"), "retry: reply text");
+    CHECK(n_captured == 3, "retry: three attempts made");
+    hl_agent_free(a);
+}
+
+static void test_no_retry_on_overflow(void)
+{
+    mock_reset();
+    fail_count = 1;
+    fail_code = -2; /* overflow is terminal: never retried */
+    mock_script(resp_reply("never reached"));
+    hl_platform_t p = test_platform();
+    hl_config_t cfg = base_cfg();
+    hl_agent_t *a = hl_agent_new(&cfg, &p, NULL, 0);
+    char reply[512];
+    int r = hl_agent_chat(a, "hello", reply, sizeof reply);
+    CHECK(r < 0, "overflow: chat fails");
+    CHECK(n_captured == 1, "overflow: not retried");
+    hl_agent_free(a);
+}
+
 static void test_history_compact(void)
 {
     mock_reset();
@@ -543,6 +583,8 @@ int main(void)
     test_stream_tool_call();
     test_stream_fallback();
     test_history_compact();
+    test_http_retry();
+    test_no_retry_on_overflow();
     if (fails) {
         printf("%d agent test(s) FAILED\n", fails);
         return 1;

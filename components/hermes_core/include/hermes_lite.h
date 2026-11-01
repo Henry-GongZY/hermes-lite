@@ -49,6 +49,8 @@ typedef struct hl_platform {
     int (*fs_list)(const char *dir, int (*cb)(void *ud, const char *name), void *ud);
 
     unsigned long (*time_ms)(void);
+    /* Sleep for backoff between HTTP retries; may be NULL (no wait). */
+    void (*delay_ms)(unsigned long ms);
     void (*log)(int level, const char *msg);
 } hl_platform_t;
 

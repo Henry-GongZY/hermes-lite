@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <dirent.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_http_client.h"
 #include "esp_timer.h"
 #include "esp_crt_bundle.h"
@@ -248,6 +250,11 @@ static int fs_list(const char *dir, int (*cb)(void *, const char *), void *ud)
     return 0;
 }
 
+static void delay_ms(unsigned long ms)
+{
+    vTaskDelay(pdMS_TO_TICKS(ms));
+}
+
 static unsigned long time_ms(void)
 {
     return (unsigned long)(esp_timer_get_time() / 1000LL);
@@ -267,6 +274,7 @@ static const hl_platform_t g_platform = {
     .fs_append = fs_append,
     .fs_list = fs_list,
     .time_ms = time_ms,
+    .delay_ms = delay_ms,
     .log = log_fn,
 };
 

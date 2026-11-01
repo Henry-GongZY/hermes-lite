@@ -1,5 +1,8 @@
 # hermes-lite
 
+[![host](https://github.com/Henry-GongZY/hermes-lite/actions/workflows/host.yml/badge.svg)](https://github.com/Henry-GongZY/hermes-lite/actions/workflows/host.yml)
+[![esp32](https://github.com/Henry-GongZY/hermes-lite/actions/workflows/esp32.yml/badge.svg)](https://github.com/Henry-GongZY/hermes-lite/actions/workflows/esp32.yml)
+
 A minimal, portable **agent runtime** in C — the embedded counterpart of the
 [Hermes Agent](https://github.com/NousResearch/hermes-agent) ecosystem. It runs
 the classic agent loop (context assembly → cloud LLM → tool calls → repeat)
@@ -26,7 +29,7 @@ test/                     JSON parser unit tests
 ```
 
 The core is strict C99 with one platform interface (`hl_platform_t`):
-`http_post`, four filesystem ops, `time_ms`, `log`. A new port (STM32, RP,
+`http_post`, four filesystem ops, `time_ms`, `delay_ms`, `log`. A new port (STM32, RP,
 TI, Zephyr…) is exactly that vtable — the agent loop never changes.
 
 ## Features

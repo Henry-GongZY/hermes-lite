@@ -1,0 +1,13 @@
+name: host
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libcurl
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+      - name: Unit + agent tests
+        run: make test
+      - name: Build CLI demo
+        run: make

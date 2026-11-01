@@ -10,6 +10,7 @@
 #define HL_DEF_MAX_ITERS 6
 #define HL_DEF_CTX_CHARS 16000
 #define HL_MAX_STREAM_CALLS 8
+#define HL_HTTP_ATTEMPTS 3 /* 1 initial + 2 retries on transport/429/5xx */
 
 static void alog(hl_agent_t *a, int lvl, const char *fmt, ...)
 {
@@ -417,9 +418,30 @@ static int agent_turn(hl_agent_t *a, const char *user_msg, hl_text_fn on_text,
             acc.a = a;
             acc.on_text = on_text;
             acc.ud = tud;
-            int st = a->plat->http_post_stream(a->cfg.api_url, a->cfg.api_key,
+            int st = 0;
+            for (int attempt = 0;; attempt++) {
+                if (attempt > 0) {
+                    /* fresh accumulator: a retried stream must not double-
+                     * deliver fragments (only retried when nothing arrived) */
+                    sacc_free(&acc);
+                    memset(&acc, 0, sizeof acc);
+                    acc.a = a;
+                    acc.on_text = on_text;
+                    acc.ud = tud;
+                }
+                st = a->plat->http_post_stream(a->cfg.api_url, a->cfg.api_key,
                                                a->req, sb.len, sse_on_line, &acc,
                                                a->resp, a->resp_cap);
+                int has_data = acc.content.len > 0 || acc.n_slots > 0;
+                int retryable = ((st < 0 && st != -2) || st == 429 ||
+                                 (st >= 500 && st <= 599)) && !has_data;
+                if (!retryable || attempt >= HL_HTTP_ATTEMPTS - 1)
+                    break;
+                alog(a, HL_LOG_INFO, "http stream attempt %d failed (%d); backing off",
+                     attempt + 1, st);
+                if (a->plat->delay_ms)
+                    a->plat->delay_ms(500ul << attempt);
+            }
             if (st < 0) {
                 sacc_free(&acc);
                 alog(a, HL_LOG_ERROR, "http stream transport error (%d)", st);
@@ -445,8 +467,20 @@ static int agent_turn(hl_agent_t *a, const char *user_msg, hl_text_fn on_text,
             ntc = acc.n_slots;
         } else {
             size_t rl = 0;
-            int st = a->plat->http_post(a->cfg.api_url, a->cfg.api_key, a->req,
+            int st = 0;
+            for (int attempt = 0;; attempt++) {
+                rl = 0;
+                st = a->plat->http_post(a->cfg.api_url, a->cfg.api_key, a->req,
                                         sb.len, a->resp, a->resp_cap, &rl);
+                int retryable = (st < 0 && st != -2) || st == 429 ||
+                                (st >= 500 && st <= 599);
+                if (!retryable || attempt >= HL_HTTP_ATTEMPTS - 1)
+                    break;
+                alog(a, HL_LOG_INFO, "http attempt %d failed (%d); backing off",
+                     attempt + 1, st);
+                if (a->plat->delay_ms)
+                    a->plat->delay_ms(500ul << attempt);
+            }
             if (st < 0) {
                 alog(a, HL_LOG_ERROR, "http transport error (%d)", st);
                 return -1;
