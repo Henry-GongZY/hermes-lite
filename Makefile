@@ -1,5 +1,5 @@
 CC      ?= cc
-CFLAGS  ?= -std=c11 -Wall -Wextra -O2 -D_POSIX_C_SOURCE=200809L
+CFLAGS  ?= -std=c11 -Wall -Wextra -O2 -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -D_DARWIN_C_SOURCE
 INC     := -Icomponents/hermes_core/include -Icomponents/hermes_core/src
 CORE    := components/hermes_core/src
 

@@ -40,15 +40,44 @@ static char s_reply[4096];
 static EventGroupHandle_t s_wifi_events;
 #define WIFI_CONNECTED_BIT BIT0
 static int s_wifi_started;
+static int s_disc_count; /* consecutive disconnects -> backoff */
+static esp_timer_handle_t s_reconnect_timer;
+
+static void reconnect_cb(void *arg)
+{
+    (void)arg;
+    esp_wifi_connect();
+}
+
+/* exponential backoff: 1s, 2s, 4s ... capped at 30s */
+static void schedule_reconnect(void)
+{
+    s_disc_count++;
+    long delay_ms = 1000L << (s_disc_count > 5 ? 5 : s_disc_count);
+    if (delay_ms > 30000L)
+        delay_ms = 30000L;
+    if (!s_reconnect_timer) {
+        const esp_timer_create_args_t targs = {
+            .callback = reconnect_cb,
+            .name = "wifi_reconnect",
+        };
+        esp_timer_create(&targs, &s_reconnect_timer);
+    }
+    esp_timer_start_once(s_reconnect_timer, (uint64_t)delay_ms * 1000);
+    printf("[app] wifi down; reconnect in %lds\n", delay_ms / 1000);
+}
 
 static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START)
         esp_wifi_connect();
-    else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED)
-        esp_wifi_connect(); /* keep retrying; agent will fail fast offline */
-    else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP)
+    else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        xEventGroupClearBits(s_wifi_events, WIFI_CONNECTED_BIT);
+        schedule_reconnect(); /* agent fails fast offline; we keep retrying */
+    } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        s_disc_count = 0;
         xEventGroupSetBits(s_wifi_events, WIFI_CONNECTED_BIT);
+    }
 }
 
 static int wifi_connect(const char *ssid, const char *pass, int timeout_ms)
@@ -93,6 +122,37 @@ static int wifi_load(char *ssid, size_t scap, char *pass, size_t pcap)
     esp_err_t e2 = nvs_get_str(h, "pass", pass, &l2);
     nvs_close(h);
     return (e1 == ESP_OK && e2 == ESP_OK) ? 0 : -1;
+}
+
+/* runtime-configurable LLM settings (NVS, namespace "hl") */
+static int cfg_save_str(const char *key, const char *val)
+{
+    nvs_handle_t h;
+    if (nvs_open("hl", NVS_READWRITE, &h) != ESP_OK)
+        return -1;
+    nvs_set_str(h, key, val);
+    nvs_commit(h);
+    nvs_close(h);
+    return 0;
+}
+
+static int cfg_load_str(const char *key, char *buf, size_t cap)
+{
+    nvs_handle_t h;
+    if (nvs_open("hl", NVS_READONLY, &h) != ESP_OK)
+        return -1;
+    size_t len = cap;
+    esp_err_t e = nvs_get_str(h, key, buf, &len);
+    nvs_close(h);
+    return e == ESP_OK ? 0 : -1;
+}
+
+static void mask_secret(const char *s, char *out, size_t cap)
+{
+    if (strlen(s) <= 10)
+        snprintf(out, cap, "***");
+    else
+        snprintf(out, cap, "%.10s***", s);
 }
 
 /* ---------------- tools ---------------- */
@@ -270,6 +330,19 @@ void app_main(void)
         .buf_skill = 8192,
     };
 
+    /* runtime overrides (serial-provisioned, persisted in NVS) */
+    {
+        static char ovr[192];
+        if (cfg_load_str("apikey", ovr, sizeof ovr) == 0 && ovr[0])
+            cfg.api_key = ovr;
+        static char ovr_url[160];
+        if (cfg_load_str("apiurl", ovr_url, sizeof ovr_url) == 0 && ovr_url[0])
+            cfg.api_url = ovr_url;
+        static char ovr_model[64];
+        if (cfg_load_str("model", ovr_model, sizeof ovr_model) == 0 && ovr_model[0])
+            cfg.model = ovr_model;
+    }
+
     hl_tool_t tools[] = {
         { .name = "gpio_write",
           .description = "Set an output GPIO level. Args: pin (0-39, not 6/11-17), level (0/1).",
@@ -302,7 +375,8 @@ void app_main(void)
         return;
     }
 
-    printf("commands: 'wifi <ssid> <pass>' | 'skills' | 'reset' | 'free'\n");
+    printf("commands: 'wifi <ssid> <pass>' | 'key <api-key>' | 'url <endpoint>' | "
+           "'model <name>' | 'skills' | 'reset' | 'free'\n");
     char line[512];
     for (;;) {
         printf("\nhermes> ");
@@ -328,6 +402,35 @@ void app_main(void)
             printf("[app] %s\n",
                    wifi_connect(ssid_in, pass_in, 15000) == 0 ? "wifi connected"
                                                               : "connect failed");
+        } else if (!strncmp(line, "key ", 4)) {
+            static char s_key[512];
+            const char *key = line + 4;
+            while (*key == ' ')
+                key++;
+            cfg_save_str("apikey", key);
+            snprintf(s_key, sizeof s_key, "%s", key);
+            static char masked[32];
+            mask_secret(key, masked, sizeof masked);
+            cfg.api_key = s_key;
+            printf("[app] api key set (%s); 'reset' to apply\n", masked);
+        } else if (!strncmp(line, "url ", 4)) {
+            static char s_url[512];
+            const char *u = line + 4;
+            while (*u == ' ')
+                u++;
+            cfg_save_str("apiurl", u);
+            snprintf(s_url, sizeof s_url, "%s", u);
+            cfg.api_url = s_url;
+            printf("[app] endpoint set: %s; 'reset' to apply\n", u);
+        } else if (!strncmp(line, "model ", 6)) {
+            static char s_model[512];
+            const char *m = line + 6;
+            while (*m == ' ')
+                m++;
+            cfg_save_str("model", m);
+            snprintf(s_model, sizeof s_model, "%s", m);
+            cfg.model = s_model;
+            printf("[app] model set: %s; 'reset' to apply\n", m);
         } else if (!strcmp(line, "skills")) {
             printf("skills in " SKILLS_DIR ":\n");
             hl_platform_esp32()->fs_list(SKILLS_DIR, skills_file_cb, NULL);

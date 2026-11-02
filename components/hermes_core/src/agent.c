@@ -318,8 +318,21 @@ typedef struct {
     int n_slots;
     hl_text_fn on_text;
     void *ud;
-    int err;
+    size_t budget; /* response byte budget; 0 = unlimited */
+    size_t used;
+    int err;       /* set when the budget is exceeded -> graceful truncation */
 } sacc_t;
+
+/* charge n bytes against the stream budget; returns 0 when over budget */
+static int sacc_charge(sacc_t *s, size_t n)
+{
+    if (s->budget && s->used + n > s->budget) {
+        s->err = 1;
+        return 0;
+    }
+    s->used += n;
+    return 1;
+}
 
 static int sse_on_line(void *vacc, const char *data)
 {
@@ -336,7 +349,7 @@ static int sse_on_line(void *vacc, const char *data)
         return 0;
 
     jval_t *c = hl_jobj_get(delta, "content");
-    if (c && c->type == J_STR && c->str[0]) {
+    if (c && c->type == J_STR && c->str[0] && sacc_charge(s, strlen(c->str))) {
         dsb_puts(&s->content, c->str);
         if (s->on_text)
             s->on_text(s->ud, c->str);
@@ -363,7 +376,8 @@ static int sse_on_line(void *vacc, const char *data)
                 if (nm && nm->type == J_STR)
                     dsb_puts(&slot->name, nm->str);
                 jval_t *ar = hl_jobj_get(fn, "arguments");
-                if (ar && ar->type == J_STR && ar->str[0])
+                if (ar && ar->type == J_STR && ar->str[0] &&
+                    sacc_charge(s, strlen(ar->str)))
                     dsb_puts(&slot->args, ar->str);
             }
         }
@@ -410,6 +424,7 @@ static int agent_turn(hl_agent_t *a, const char *user_msg, hl_text_fn on_text,
         const char *content = NULL;
         tc_ref_t refs[HL_MAX_STREAM_CALLS] = { 0 };
         int ntc = 0;
+        int truncated = 0;
         sacc_t acc = { 0 };
 
         if (stream) {
@@ -418,6 +433,7 @@ static int agent_turn(hl_agent_t *a, const char *user_msg, hl_text_fn on_text,
             acc.a = a;
             acc.on_text = on_text;
             acc.ud = tud;
+            acc.budget = a->resp_cap;
             int st = 0;
             for (int attempt = 0;; attempt++) {
                 if (attempt > 0) {
@@ -428,6 +444,7 @@ static int agent_turn(hl_agent_t *a, const char *user_msg, hl_text_fn on_text,
                     acc.a = a;
                     acc.on_text = on_text;
                     acc.ud = tud;
+                    acc.budget = a->resp_cap;
                 }
                 st = a->plat->http_post_stream(a->cfg.api_url, a->cfg.api_key,
                                                a->req, sb.len, sse_on_line, &acc,
@@ -453,11 +470,9 @@ static int agent_turn(hl_agent_t *a, const char *user_msg, hl_text_fn on_text,
                 sacc_free(&acc);
                 return -1;
             }
-            if (acc.err) {
-                sacc_free(&acc);
-                alog(a, HL_LOG_ERROR, "stream too large for memory");
-                return -1;
-            }
+            int truncated = acc.err;
+            if (truncated)
+                alog(a, HL_LOG_INFO, "stream exceeded budget; truncating response");
             content = acc.content.buf;
             for (int i = 0; i < acc.n_slots; i++) {
                 refs[i].id = acc.slots[i].id.buf;
@@ -521,7 +536,9 @@ static int agent_turn(hl_agent_t *a, const char *user_msg, hl_text_fn on_text,
         hl_history_append(a, a->tail);
 
         if (ntc == 0) {
-            snprintf(reply, reply_cap, "%s", content ? content : "");
+            snprintf(reply, reply_cap, "%s%s", content ? content : "",
+                     truncated ? "\n\n[response truncated: exceeded memory budget]"
+                               : "");
             if (stream)
                 sacc_free(&acc);
             free(tc_raw);
