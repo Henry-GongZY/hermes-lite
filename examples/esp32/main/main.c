@@ -17,6 +17,8 @@
 #include "esp_spiffs.h"
 #include "driver/gpio.h"
 #include "driver/adc.h"
+#include "driver/ledc.h"
+#include "driver/i2c.h"
 #include "sdkconfig.h"
 #include "json.h"
 
@@ -25,15 +27,58 @@
  * Serial commands:
  *   wifi <ssid> <password>   provision + connect (stored in NVS)
  *   skills                   list skill files on SPIFFS
- *   reset                    wipe conversation history and restart the agent
+ *   sessions                 list session history files
+ *   session <name>           switch to another session (restarts the agent)
+ *   reset                    wipe the CURRENT session and restart the agent
  *   free                     show heap usage
  *   anything else            goes to the agent */
 
 #define SPIFFS_BASE "/spiffs"
-#define HISTORY_PATH SPIFFS_BASE "/history.jsonl"
+#define SESSIONS_DIR SPIFFS_BASE "/sessions"
+#define DEFAULT_SESSION "default"
 #define SKILLS_DIR SPIFFS_BASE "/skills"
 
 static char s_reply[4096];
+
+/* ---------------- sessions ---------------- */
+
+/* Sessions are per-name JSONL history files under /spiffs/sessions/. */
+
+/* Resolved path must live in static storage: hl_config_t.history_path is a
+ * borrowed string that must outlive the agent, and the REPL's `line` buffer
+ * is reused every command (same pattern as s_key/s_url below). */
+static char s_session_path[160];
+
+static const char *session_path(const char *name)
+{
+    snprintf(s_session_path, sizeof s_session_path, "%s/%s.jsonl", SESSIONS_DIR, name);
+    return s_session_path;
+}
+
+/* Session names must be plain single path components (no separators,
+ * no traversal, not hidden). */
+static int valid_session_name(const char *name)
+{
+    if (!name || !name[0] || name[0] == '.')
+        return 0;
+    if (!strcmp(name, ".."))
+        return 0;
+    if (strchr(name, '/') || strchr(name, '\\'))
+        return 0;
+    return 1;
+}
+
+static int s_n_sessions;
+
+static int sessions_file_cb(void *ud, const char *name)
+{
+    (void)ud;
+    if (name[0] != '.') {
+        printf("  %s\n", name);
+        s_n_sessions++;
+    }
+    return 0;
+}
 
 /* ---------------- wifi ---------------- */
 
@@ -235,6 +280,165 @@ static int tool_adc_read(void *ud, const char *args, char *out, size_t cap)
     return 0;
 }
 
+static int tool_pwm_write(void *ud, const char *args, char *out, size_t cap)
+{
+    (void)ud;
+    char arena[512];
+    jval_t *v = hl_json_parse(arena, sizeof arena, args && *args ? args : "{}", NULL);
+    jval_t *pin = jnum(v, "pin");
+    jval_t *duty = jnum(v, "duty");
+    if (!pin || !duty) {
+        snprintf(out, cap, "error: need pin (int) and duty (0-1023)");
+        return 1;
+    }
+    int p = (int)pin->num;
+    if (p < 0 || p > 39 || p == 6 || (p >= 11 && p <= 17)) {
+        snprintf(out, cap, "error: pin %d not usable (flash/PSRAM pins)", p);
+        return 1;
+    }
+    int d = (int)duty->num;
+    if (d < 0 || d > 1023) {
+        snprintf(out, cap, "error: duty must be 0-1023");
+        return 1;
+    }
+    ledc_timer_config_t tc = {
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .duty_resolution = LEDC_TIMER_10_BIT,
+        .timer_num = LEDC_TIMER_0,
+        .freq_hz = 5000,
+        .clk_cfg = LEDC_AUTO_CLK,
+    };
+    ledc_timer_config(&tc);
+    ledc_channel_config_t cc = {
+        .gpio_num = p,
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel = LEDC_CHANNEL_0,
+        .intr_type = LEDC_INTR_DISABLE,
+        .timer_sel = LEDC_TIMER_0,
+        .duty = d,
+        .hpoint = 0,
+    };
+    ledc_channel_config(&cc);
+    snprintf(out, cap, "ok: GPIO%d PWM duty %d/1023 (5 kHz, LEDC ch0)", p, d);
+    return 0;
+}
+
+static int tool_i2c_scan(void *ud, const char *args, char *out, size_t cap)
+{
+    (void)ud;
+    (void)args;
+    /* lazy one-time bus init on the common devkit pins (SDA=21, SCL=22) */
+    static int bus_ready;
+    if (!bus_ready) {
+        i2c_config_t conf = {
+            .mode = I2C_MODE_MASTER,
+            .sda_io_num = 21,
+            .scl_io_num = 22,
+            .sda_pullup_en = true,
+            .scl_pullup_en = true,
+            .master.clk_speed = 100000,
+        };
+        if (i2c_param_config(I2C_NUM_0, &conf) != ESP_OK ||
+            i2c_driver_install(I2C_NUM_0, I2C_MODE_MASTER, 0, 0, 0) != ESP_OK) {
+            snprintf(out, cap, "error: i2c init failed (SDA=21, SCL=22)");
+            return 1;
+        }
+        bus_ready = 1;
+    }
+    int n_found = 0, off = 0;
+    for (uint8_t addr = 0x03; addr <= 0x77; addr++) {
+        /* 1-byte probe: an ACK of the address means a device responded */
+        const uint8_t dummy = 0x00;
+        esp_err_t r = i2c_master_write_to_device(I2C_NUM_0, addr, &dummy, 1,
+                                                 pdMS_TO_TICKS(100));
+        if (r == ESP_OK) {
+            if (n_found == 0)
+                off += snprintf(out + off, cap - off,
+                                "found device(s) on SDA=21/SCL=22: ");
+            else
+                off += snprintf(out + off, cap - off, ", ");
+            off += snprintf(out + off, cap - off, "0x%02X", addr);
+            n_found++;
+        }
+    }
+    if (n_found == 0)
+        snprintf(out, cap, "no I2C devices found (SDA=21, SCL=22)");
+    return 0;
+}
+
+/* file_read/file_write paths must stay inside SPIFFS */
+static int spiffs_path_ok(const char *path, char *out, size_t cap)
+{
+    if (strncmp(path, SPIFFS_BASE "/", strlen(SPIFFS_BASE "/")) != 0) {
+        snprintf(out, cap, "error: path must be under /spiffs/");
+        return 0;
+    }
+    for (const char *p = path; (p = strstr(p, "..")) != NULL; p += 2) {
+        if ((p == path || p[-1] == '/') && (p[2] == '/' || p[2] == 0)) {
+            snprintf(out, cap, "error: path must not contain '..'");
+            return 0;
+        }
+    }
+    return 1;
+}
+
+#define FILE_TOOL_CAP 2048
+/* large scratch lives in static storage, not on the task stack */
+static char s_file_buf[FILE_TOOL_CAP + 1]; /* file_read contents */
+static char s_file_arena[4096];            /* file_write JSON parse arena */
+
+static int tool_file_read(void *ud, const char *args, char *out, size_t cap)
+{
+    (void)ud;
+    char arena[512];
+    jval_t *v = hl_json_parse(arena, sizeof arena, args && *args ? args : "{}", NULL);
+    jval_t *path = hl_jobj_get(v, "path");
+    if (!path || path->type != J_STR || !path->str[0]) {
+        snprintf(out, cap, "error: need path (string)");
+        return 1;
+    }
+    if (!spiffs_path_ok(path->str, out, cap))
+        return 1;
+    size_t len = 0;
+    if (hl_platform_esp32()->fs_read(path->str, s_file_buf, FILE_TOOL_CAP, &len) != 0) {
+        snprintf(out, cap, "error: cannot read %s", path->str);
+        return 1;
+    }
+    s_file_buf[len] = 0;
+    if (len == 0)
+        snprintf(out, cap, "%s: (empty)", path->str);
+    else
+        snprintf(out, cap, "%s", s_file_buf);
+    return 0;
+}
+
+static int tool_file_write(void *ud, const char *args, char *out, size_t cap)
+{
+    (void)ud;
+    jval_t *v = hl_json_parse(s_file_arena, sizeof s_file_arena,
+                              args && *args ? args : "{}", NULL);
+    jval_t *path = v ? hl_jobj_get(v, "path") : NULL;
+    jval_t *content = v ? hl_jobj_get(v, "content") : NULL;
+    if (!path || path->type != J_STR || !path->str[0] ||
+        !content || content->type != J_STR) {
+        snprintf(out, cap, "error: need path (string) and content (string, max 2048)");
+        return 1;
+    }
+    if (!spiffs_path_ok(path->str, out, cap))
+        return 1;
+    size_t clen = strlen(content->str);
+    if (clen > FILE_TOOL_CAP) {
+        snprintf(out, cap, "error: content too large (max 2048 bytes)");
+        return 1;
+    }
+    if (hl_platform_esp32()->fs_write(path->str, content->str, clen) != 0) {
+        snprintf(out, cap, "error: cannot write %s", path->str);
+        return 1;
+    }
+    snprintf(out, cap, "ok: wrote %u bytes to %s", (unsigned)clen, path->str);
+    return 0;
+}
+
 static int tool_sys_info(void *ud, const char *args, char *out, size_t cap)
 {
     (void)ud;
@@ -321,7 +525,9 @@ void app_main(void)
             "You are Hermes Lite running on an ESP32 microcontroller. "
             "Answer briefly in the user's language. Use tools for hardware state.",
         .skills_dir = SKILLS_DIR,
-        .history_path = HISTORY_PATH,
+        /* sessions/<name>.jsonl; the pointer is borrowed by the agent and
+         * must stay valid for the agent's lifetime (static s_session_path) */
+        .history_path = session_path(DEFAULT_SESSION),
         .max_ctx_chars = 8000,
         .buf_req = 24576,
         .buf_resp = 24576,
@@ -366,9 +572,33 @@ void app_main(void)
           .description = "Device status: free heap, minimum heap, uptime, IDF version, wifi RSSI.",
           .parameters_json = "{\"type\":\"object\",\"properties\":{}}",
           .fn = tool_sys_info },
+        { .name = "pwm_write",
+          .description = "Write a PWM duty cycle to a pin via LEDC timer0/channel0 "
+                         "(5 kHz, 10-bit). Args: pin (0-39, not 6/11-17), duty (0-1023).",
+          .parameters_json =
+              "{\"type\":\"object\",\"properties\":{\"pin\":{\"type\":\"integer\"},"
+              "\"duty\":{\"type\":\"integer\"}},\"required\":[\"pin\",\"duty\"]}",
+          .fn = tool_pwm_write },
+        { .name = "i2c_scan",
+          .description = "Scan the I2C bus (SDA=21, SCL=22) and list found device addresses.",
+          .parameters_json = "{\"type\":\"object\",\"properties\":{}}",
+          .fn = tool_i2c_scan },
+        { .name = "file_read",
+          .description = "Read a text file from SPIFFS (max 2 KB). Args: path (under /spiffs/).",
+          .parameters_json =
+              "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},"
+              "\"required\":[\"path\"]}",
+          .fn = tool_file_read },
+        { .name = "file_write",
+          .description = "Write text to a file on SPIFFS (max 2 KB, overwrites). "
+                         "Args: path (under /spiffs/), content.",
+          .parameters_json =
+              "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},"
+              "\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}",
+          .fn = tool_file_write },
     };
 
-    hl_agent_t *agent = hl_agent_new(&cfg, hl_platform_esp32(), tools, 4);
+    hl_agent_t *agent = hl_agent_new(&cfg, hl_platform_esp32(), tools, 8);
     if (!agent) {
         printf("[app] agent init failed (heap too low?) free=%lu\n",
                (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT));
@@ -376,7 +606,8 @@ void app_main(void)
     }
 
     printf("commands: 'wifi <ssid> <pass>' | 'key <api-key>' | 'url <endpoint>' | "
-           "'model <name>' | 'skills' | 'reset' | 'free'\n");
+           "'model <name>' | 'skills' | 'sessions' | 'session <name>' | "
+           "'reset' | 'free'\n");
     char line[512];
     for (;;) {
         printf("\nhermes> ");
@@ -434,11 +665,33 @@ void app_main(void)
         } else if (!strcmp(line, "skills")) {
             printf("skills in " SKILLS_DIR ":\n");
             hl_platform_esp32()->fs_list(SKILLS_DIR, skills_file_cb, NULL);
+        } else if (!strcmp(line, "sessions")) {
+            printf("sessions in " SESSIONS_DIR ":\n");
+            s_n_sessions = 0;
+            hl_platform_esp32()->fs_list(SESSIONS_DIR, sessions_file_cb, NULL);
+            if (!s_n_sessions)
+                printf("  (none yet)\n");
+        } else if (!strcmp(line, "session")) {
+            printf("usage: session <name>\n");
+        } else if (!strncmp(line, "session ", 8)) {
+            const char *name = line + 8;
+            while (*name == ' ')
+                name++;
+            if (!valid_session_name(name)) {
+                printf("usage: session <name> (plain name, no '/', '..' or leading '.')\n");
+            } else {
+                hl_agent_free(agent);
+                /* s_session_path (static) keeps the borrowed string alive */
+                cfg.history_path = session_path(name);
+                agent = hl_agent_new(&cfg, hl_platform_esp32(), tools, 8);
+                printf("[app] session '%s' active (%s)\n", name, s_session_path);
+            }
         } else if (!strcmp(line, "reset")) {
-            remove(HISTORY_PATH);
+            /* wipe the CURRENT session's history file, then rebuild */
+            remove(cfg.history_path);
             hl_agent_free(agent);
-            agent = hl_agent_new(&cfg, hl_platform_esp32(), tools, 4);
-            printf("[app] agent restarted, history wiped\n");
+            agent = hl_agent_new(&cfg, hl_platform_esp32(), tools, 8);
+            printf("[app] agent restarted, history wiped (%s)\n", s_session_path);
         } else if (!strcmp(line, "free")) {
             printf("free_heap=%lu min_free=%lu\n",
                    (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT),

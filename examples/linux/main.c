@@ -5,9 +5,52 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <errno.h>
+#include <sys/stat.h>
 
 /* Terminal demo: chat with tools (exec/time). The exec tool gives the agent
- * a shell — dev-machine only, obviously not for shipping. */
+ * a shell — dev-machine only, obviously not for shipping. Sessions are
+ * per-name JSONL history files under ./sessions/ (HL_SESSION picks the
+ * initial session, default "default"). */
+
+#define SESSIONS_DIR "sessions"
+#define DEFAULT_SESSION "default"
+
+/* The resolved path lives in a static buffer: hl_config_t.history_path is a
+ * borrowed string that must outlive the agent, and the REPL's `line` buffer
+ * is reused every command. */
+static char s_session_path[512];
+
+static const char *session_path(const char *name)
+{
+    snprintf(s_session_path, sizeof s_session_path, "%s/%s.jsonl", SESSIONS_DIR, name);
+    return s_session_path;
+}
+
+/* Session names must be plain single path components (no separators,
+ * no traversal, not hidden). */
+static int valid_session_name(const char *name)
+{
+    if (!name || !name[0] || name[0] == '.')
+        return 0;
+    if (!strcmp(name, ".."))
+        return 0;
+    if (strchr(name, '/') || strchr(name, '\\'))
+        return 0;
+    return 1;
+}
+
+static int s_n_sessions;
+
+static int sessions_file_cb(void *ud, const char *name)
+{
+    (void)ud;
+    if (name[0] != '.') {
+        printf("  %s\n", name);
+        s_n_sessions++;
+    }
+    return 0;
+}
 
 static int tool_time_now(void *ud, const char *args, char *out, size_t cap)
 {
@@ -56,10 +99,18 @@ int main(void)
     const char *key = getenv("HL_API_KEY");
     const char *model = getenv("HL_MODEL");
     const char *skills = getenv("HL_SKILLS_DIR");
-    const char *hist = getenv("HL_HISTORY");
+    const char *session = getenv("HL_SESSION");
+    if (!session || !session[0])
+        session = DEFAULT_SESSION;
 
     if (!key || !key[0]) {
         fprintf(stderr, "usage: HL_API_KEY=sk-... [%s]\n", "./hermes-lite");
+        return 1;
+    }
+
+    /* session storage: one JSONL history file per session name */
+    if (mkdir(SESSIONS_DIR, 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "cannot create %s dir\n", SESSIONS_DIR);
         return 1;
     }
 
@@ -72,7 +123,9 @@ int main(void)
             "When a task needs a shell command or current time, use your tools "
             "instead of guessing.",
         .skills_dir = skills && skills[0] ? skills : "skills",
-        .history_path = hist && hist[0] ? hist : "history.jsonl",
+        /* sessions/<name>.jsonl; the pointer is borrowed by the agent and
+         * must stay valid for the agent's lifetime (static s_session_path) */
+        .history_path = session_path(session),
         .max_ctx_chars = 24000,
     };
 
@@ -96,7 +149,8 @@ int main(void)
         return 1;
     }
 
-    printf("hermes-lite | model=%s | type 'quit' to exit\n", cfg.model);
+    printf("hermes-lite | model=%s | session='%s' | commands: sessions | "
+           "session <name> | quit\n", cfg.model, session);
     char line[2048], reply[8192];
     for (;;) {
         printf("\x1b[36myou>\x1b[0m ");
@@ -108,6 +162,33 @@ int main(void)
             continue;
         if (!strcmp(line, "quit") || !strcmp(line, "exit"))
             break;
+        if (!strcmp(line, "sessions")) {
+            printf("sessions in " SESSIONS_DIR "/:\n");
+            s_n_sessions = 0;
+            hl_platform_posix()->fs_list(SESSIONS_DIR, sessions_file_cb, NULL);
+            if (!s_n_sessions)
+                printf("  (none yet)\n");
+            continue;
+        }
+        if (!strcmp(line, "session")) {
+            printf("usage: session <name>\n");
+            continue;
+        }
+        if (!strncmp(line, "session ", 8)) {
+            const char *name = line + 8;
+            while (*name == ' ')
+                name++;
+            if (!valid_session_name(name)) {
+                printf("usage: session <name> (plain name, no '/', '..' or leading '.')\n");
+            } else {
+                hl_agent_free(agent);
+                /* s_session_path (static) keeps the borrowed string alive */
+                cfg.history_path = session_path(name);
+                agent = hl_agent_new(&cfg, hl_platform_posix(), tools, 2);
+                printf("session '%s' active (%s)\n", name, s_session_path);
+            }
+            continue;
+        }
         long t0 = hl_platform_posix()->time_ms();
         printf("\x1b[33mhermes>\x1b[0m ");
         fflush(stdout);

@@ -60,7 +60,9 @@ typedef struct hl_config {
     const char *model;
     const char *system_prompt;  /* optional; prepended as system message */
     const char *skills_dir;     /* optional; enables skills + built-in read_skill */
-    const char *history_path;   /* optional; JSONL conversation persistence */
+    const char *history_path;   /* optional; JSONL conversation persistence.
+                                   Borrowed: the caller-owned string must
+                                   outlive the agent (not copied). */
     size_t max_ctx_chars;       /* per-request message char budget; 0 = 16000 */
     int    max_tool_iters;      /* tool rounds per turn; 0 = 6 */
     size_t buf_req;             /* request build buffer; 0 = 64KB */
