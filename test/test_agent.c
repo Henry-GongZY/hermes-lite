@@ -111,6 +111,10 @@ static int mock_http_post_stream(const char *url, const char *auth,
     (void)errcap;
     assert(n_captured < MAX_CAP);
     captured_req[n_captured++] = strdup(body);
+    if (fail_count > 0) {
+        fail_count--;
+        return fail_code;
+    }
     if (stream_pos >= n_stream)
         return -1;
     char *tmp = strdup(stream_script[stream_pos++]);
@@ -526,6 +530,38 @@ static void test_no_retry_on_overflow(void)
     hl_agent_free(a);
 }
 
+static void test_stream_budget_truncates(void)
+{
+    mock_reset();
+    mock_stream_script(
+        "{\"choices\":[{\"delta\":{\"content\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}]}\n"
+        "[DONE]");
+    hl_platform_t p = test_platform();
+    hl_config_t cfg = base_cfg();
+    static char hpath[512]; /* own file: the default one is shared by tests */
+    snprintf(hpath, sizeof hpath, "%s/budget.jsonl", s_tmpdir);
+    cfg.history_path = hpath;
+    cfg.buf_resp = 16; /* tiny budget: the 40-byte chunk is already over */
+    hl_agent_t *a = hl_agent_new(&cfg, &p, NULL, 0);
+    char reply[512];
+    int r = hl_agent_chat_stream(a, "hi", collect_frag, NULL, reply, sizeof reply);
+    CHECK(r == 0, "budget: stream degrades instead of failing");
+    CHECK(strstr(reply, "[response truncated: exceeded memory budget]") != NULL,
+          "budget: truncation notice in reply");
+    CHECK(frag_calls == 0, "budget: over-budget fragment not delivered");
+    /* the assistant history message holds only the partial content (here:
+     * nothing survived the budget, so an empty content string) */
+    char hbuf[2048];
+    size_t hlen = 0;
+    assert(hl_platform_posix()->fs_read(cfg.history_path, hbuf,
+                                        sizeof hbuf - 1, &hlen) == 0);
+    hbuf[hlen] = 0;
+    CHECK(strstr(hbuf, "{\"role\":\"assistant\",\"content\":\"\"}") != NULL,
+          "budget: assistant history keeps only the partial content");
+    CHECK(strstr(hbuf, "aaaa") == NULL, "budget: over-budget text not persisted");
+    hl_agent_free(a);
+}
+
 static void test_history_compact(void)
 {
     mock_reset();
@@ -582,6 +618,7 @@ int main(void)
     test_stream_reply();
     test_stream_tool_call();
     test_stream_fallback();
+    test_stream_budget_truncates();
     test_history_compact();
     test_http_retry();
     test_no_retry_on_overflow();

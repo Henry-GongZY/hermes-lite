@@ -470,7 +470,7 @@ static int agent_turn(hl_agent_t *a, const char *user_msg, hl_text_fn on_text,
                 sacc_free(&acc);
                 return -1;
             }
-            int truncated = acc.err;
+            truncated = acc.err;
             if (truncated)
                 alog(a, HL_LOG_INFO, "stream exceeded budget; truncating response");
             content = acc.content.buf;
