@@ -78,7 +78,7 @@ void hl_history_load(hl_agent_t *a)
                 /* skip empty assistant lines: useless context that some
                  * upstreams answer with an empty body */
                 if (!strcmp(role->str, "assistant") &&
-                    (!content || !content->type == J_STR || !content->str[0]) &&
+                    (!content || content->type != J_STR || !content->str[0]) &&
                     !tcs)
                     goto next_line;
                 char *tcs_raw = NULL;
