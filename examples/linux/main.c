@@ -162,6 +162,66 @@ int main(void)
             continue;
         if (!strcmp(line, "quit") || !strcmp(line, "exit"))
             break;
+        if (!strncmp(line, "sync", 4) && (line[4] == ' ' || line[4] == '\0')) {
+            /* OTA skill sync: GET <base>/index.json -> {"skills":[{name,file}]}
+             * then fetch each file into the skills dir */
+            static char base[256];
+            if (line[4] == ' ') {
+                const char *u = line + 5;
+                while (*u == ' ')
+                    u++;
+                snprintf(base, sizeof base, "%s", u);
+            } else {
+                printf("usage: sync <base-url>\n");
+                continue;
+            }
+            const hl_platform_t *plat = hl_platform_posix();
+            static char idx[4096];
+            size_t blen = strlen(base);
+            char url[300];
+            snprintf(url, sizeof url, "%s%sindex.json", base,
+                     blen && base[blen - 1] == '/' ? "" : "/");
+            size_t len = 0;
+            int st = plat->http_get ? plat->http_get(url, cfg.api_key, idx,
+                                                    sizeof idx - 1, &len)
+                                    : -1;
+            if (st != 200) {
+                printf("sync: index fetch failed (http %d)\n", st);
+                continue;
+            }
+            idx[len] = 0;
+            char arena[2048];
+            jval_t *root = hl_json_parse(arena, sizeof arena, idx, NULL);
+            jval_t *skills = root ? hl_jobj_get(root, "skills") : NULL;
+            if (!skills || skills->type != J_ARR) {
+                printf("sync: bad index.json\n");
+                continue;
+            }
+            int n = hl_jarr_len(skills), ok = 0;
+            for (int i = 0; i < n; i++) {
+                jval_t *e = hl_jarr_get(skills, i);
+                jval_t *nm = hl_jobj_get(e, "name");
+                jval_t *fl = hl_jobj_get(e, "file");
+                if (!nm || !fl || nm->type != J_STR || fl->type != J_STR ||
+                    !nm->str[0] || strchr(nm->str, '/') || nm->str[0] == '.')
+                    continue;
+                snprintf(url, sizeof url, "%s%s%s", base,
+                         blen && base[blen - 1] == '/' ? "" : "/", fl->str);
+                len = 0;
+                st = plat->http_get(url, cfg.api_key, idx, sizeof idx - 1, &len);
+                if (st != 200 || len == 0)
+                    continue;
+                idx[len] = 0;
+                char p[512];
+                snprintf(p, sizeof p, "%s/%s.md", cfg.skills_dir, nm->str);
+                if (plat->fs_write(p, idx, len) == 0) {
+                    printf("synced '%s' (%zu bytes)\n", nm->str, len);
+                    ok++;
+                }
+            }
+            printf("sync done: %d/%d skills\n", ok, n);
+            continue;
+        }
         if (!strcmp(line, "sessions")) {
             printf("sessions in " SESSIONS_DIR "/:\n");
             s_n_sessions = 0;

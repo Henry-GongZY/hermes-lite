@@ -202,6 +202,45 @@ static int http_post_stream(const char *url, const char *auth_bearer,
     return status;
 }
 
+static int http_get(const char *url, const char *auth_bearer,
+                    char *resp, size_t resp_cap, size_t *resp_len)
+{
+    rx_t rx = { resp, resp_cap, 0, 0 };
+    esp_http_client_config_t hc = {
+        .url = url,
+        .method = HTTP_METHOD_GET,
+        .event_handler = evh,
+        .user_data = &rx,
+        .timeout_ms = 60000,
+        .buffer_size = 4096,
+#if CONFIG_HL_TLS_INSECURE
+        .crt_bundle_attach = NULL,
+        .skip_cert_common_name_check = true,
+#else
+        .crt_bundle_attach = esp_crt_bundle_attach,
+#endif
+    };
+    esp_http_client_handle_t h = esp_http_client_init(&hc);
+    if (!h)
+        return -1;
+    static char auth[192];
+    snprintf(auth, sizeof auth, "Bearer %s", auth_bearer);
+    esp_http_client_set_header(h, "Authorization", auth);
+
+    esp_err_t err = esp_http_client_perform(h);
+    int status = esp_http_client_get_status_code(h);
+    esp_http_client_cleanup(h);
+
+    if (rx.overflow)
+        return -2;
+    if (err != ESP_OK && status == 0) {
+        printf("[hl:E] http get transport: %s\n", esp_err_to_name(err));
+        return -1;
+    }
+    *resp_len = rx.len;
+    return status;
+}
+
 static int fs_read(const char *path, char *buf, size_t cap, size_t *len)
 {
     FILE *f = fopen(path, "rb");
@@ -275,6 +314,7 @@ static const hl_platform_t g_platform = {
     .fs_list = fs_list,
     .time_ms = time_ms,
     .delay_ms = delay_ms,
+    .http_get = http_get,
     .log = log_fn,
 };
 

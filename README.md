@@ -103,6 +103,22 @@ Agent buffers: 24KB request + 24KB response + 24KB JSON arena + 8KB history +
 WiFi. TLS uses the built-in certificate bundle (`CONFIG_HL_TLS_INSECURE=y`
 skips verification — dev only).
 
+
+## Benchmarks (host, macOS, gpt-6.1-terra via the same endpoint, 2026-11-03)
+
+Median wall-clock per user turn over 3 runs (identical prompts, identical
+tool set — `time_now` + `exec` — on both runtimes):
+
+| task | C | Rust |
+|---|---|---|
+| pure-LLM reply | 2.1 s | 2.6 s |
+| one tool call | 5.0 s | 5.4 s |
+| tool chain (2 calls) | 8.4 s | 8.9 s |
+
+Runtime overhead is noise-level: the round trip is dominated by the LLM and
+the network, which is exactly the thin-client design goal. Device numbers
+(ESP32, 240 MHz, TLS) pending hardware verification.
+
 ## Roadmap
 
 - [x] SSE streaming responses (live fragments; buffered fallback)

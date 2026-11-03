@@ -478,6 +478,60 @@ static void on_fragment(void *ud, const char *frag)
     fflush(stdout);
 }
 
+/* OTA skill sync: GET <base>/index.json -> {"skills":[{"name","file"}]}
+ * then GET <base>/<file> for each entry, saved as <skills_dir>/<name>.md */
+static void do_sync(const hl_platform_t *plat, const char *base, const char *skills_dir)
+{
+    if (!plat->http_get) {
+        printf("[app] sync: http_get not supported by this platform\n");
+        return;
+    }
+    static char idx_buf[4096];
+    static char url[512];
+    size_t blen = strlen(base);
+    snprintf(url, sizeof url, "%s%sindex.json", base, blen && base[blen - 1] == '/' ? "" : "/");
+    size_t len = 0;
+    int st = plat->http_get(url, "", idx_buf, sizeof idx_buf - 1, &len);
+    if (st != 200) {
+        printf("[app] sync: index fetch failed (http %d)\n", st);
+        return;
+    }
+    idx_buf[len] = 0;
+
+    char arena[2048];
+    jval_t *root = hl_json_parse(arena, sizeof arena, idx_buf, NULL);
+    jval_t *skills = root ? hl_jobj_get(root, "skills") : NULL;
+    if (!skills || skills->type != J_ARR) {
+        printf("[app] sync: bad index.json\n");
+        return;
+    }
+    int n = hl_jarr_len(skills), ok = 0;
+    for (int i = 0; i < n; i++) {
+        jval_t *e = hl_jarr_get(skills, i);
+        jval_t *nm = hl_jobj_get(e, "name");
+        jval_t *fl = hl_jobj_get(e, "file");
+        if (!nm || !fl || nm->type != J_STR || fl->type != J_STR ||
+            !nm->str[0] || strchr(nm->str, '/') || nm->str[0] == '.')
+            continue;
+        snprintf(url, sizeof url, "%s%s%s", base,
+                 blen && base[blen - 1] == '/' ? "" : "/", fl->str);
+        len = 0;
+        st = plat->http_get(url, "", idx_buf, sizeof idx_buf - 1, &len);
+        if (st != 200 || len == 0) {
+            printf("[app] sync: %s failed (http %d)\n", nm->str, st);
+            continue;
+        }
+        idx_buf[len] = 0;
+        char path[300];
+        snprintf(path, sizeof path, "%s/%s.md", skills_dir, nm->str);
+        if (plat->fs_write(path, idx_buf, len) == 0) {
+            printf("[app] synced skill '%s' (%zu bytes)\n", nm->str, len);
+            ok++;
+        }
+    }
+    printf("[app] sync done: %d/%d skills\n", ok, n);
+}
+
 static int skills_file_cb(void *ud, const char *name)
 {
     if (name[0] != '.')
@@ -662,6 +716,23 @@ void app_main(void)
             snprintf(s_model, sizeof s_model, "%s", m);
             cfg.model = s_model;
             printf("[app] model set: %s; 'reset' to apply\n", m);
+        } else if (!strncmp(line, "sync", 4) &&
+                   (line[4] == ' ' || line[4] == '\0')) {
+            static char s_sync_url[512];
+            if (line[4] == ' ') {
+                const char *u = line + 5;
+                while (*u == ' ')
+                    u++;
+                if (*u) {
+                    cfg_save_str("syncurl", u);
+                    snprintf(s_sync_url, sizeof s_sync_url, "%s", u);
+                }
+            } else if (cfg_load_str("syncurl", s_sync_url, sizeof s_sync_url) != 0 ||
+                       !s_sync_url[0]) {
+                printf("[app] no sync url saved; use 'sync <base-url>'\n");
+                continue;
+            }
+            do_sync(hl_platform_esp32(), s_sync_url, SKILLS_DIR);
         } else if (!strcmp(line, "skills")) {
             printf("skills in " SKILLS_DIR ":\n");
             hl_platform_esp32()->fs_list(SKILLS_DIR, skills_file_cb, NULL);

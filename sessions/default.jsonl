@@ -1,0 +1,40 @@
+{"role":"user","content":"调用 time_now 工具查询当前时间。"}
+{"role":"assistant","content":null,"tool_calls":[{"id":"call_5e6257fa0adb452088a456367865e695","type":"function","function":{"name":"time_now","arguments":"{}"}}]}
+{"role":"tool","tool_call_id":"call_5e6257fa0adb452088a456367865e695","content":"2026-11-04 01:58:37"}
+{"role":"assistant","content":"当前本地时间：2026 年 11 月 4 日 01:58:37。"}
+{"role":"user","content":"用一句话回答：1+1 等于几？"}
+{"role":"assistant","content":"1+1 等于 2。"}
+{"role":"user","content":"用一句话回答：1+1 等于几？"}
+{"role":"assistant","content":"1+1 等于 2。"}
+{"role":"user","content":"用一句话回答：1+1 等于几？"}
+{"role":"assistant","content":"1+1 等于 2。"}
+{"role":"user","content":"调用 time_now 工具查询当前时间，然后只回复工具返回的时间。"}
+{"role":"assistant","content":null,"tool_calls":[{"id":"call_c2e0e15ee30440d3bdfe1687d251b382","type":"function","function":{"name":"time_now","arguments":"{}"}}]}
+{"role":"tool","tool_call_id":"call_c2e0e15ee30440d3bdfe1687d251b382","content":"2026-11-04 01:59:49"}
+{"role":"assistant","content":"2026-11-04 01:59:49"}
+{"role":"user","content":"调用 time_now 工具查询当前时间，然后只回复工具返回的时间。"}
+{"role":"assistant","content":null,"tool_calls":[{"id":"call_1d355cd25b6a4639b60c38e07d291b47","type":"function","function":{"name":"time_now","arguments":"{}"}}]}
+{"role":"tool","tool_call_id":"call_1d355cd25b6a4639b60c38e07d291b47","content":"2026-11-04 01:59:54"}
+{"role":"assistant","content":"2026-11-04 01:59:54"}
+{"role":"user","content":"调用 time_now 工具查询当前时间，然后只回复工具返回的时间。"}
+{"role":"assistant","content":null,"tool_calls":[{"id":"call_ccc58208cb6645e391186245aaa48ffb","type":"function","function":{"name":"time_now","arguments":"{}"}}]}
+{"role":"tool","tool_call_id":"call_ccc58208cb6645e391186245aaa48ffb","content":"2026-11-04 01:59:59"}
+{"role":"assistant","content":"2026-11-04 01:59:59"}
+{"role":"user","content":"依次执行两个工具：先用 time_now 查时间，再用 exec 运行 echo bench-ok，最后汇总。"}
+{"role":"assistant","content":null,"tool_calls":[{"id":"call_a5222d31f2e54d7d86bdf6fb2eb9857e","type":"function","function":{"name":"time_now","arguments":"{}"}}]}
+{"role":"tool","tool_call_id":"call_a5222d31f2e54d7d86bdf6fb2eb9857e","content":"2026-11-04 02:00:06"}
+{"role":"assistant","content":null,"tool_calls":[{"id":"call_80aa1aa003884748bcc04442d1910e54","type":"function","function":{"name":"exec","arguments":"{\"command\":\"echo bench-ok\"}"}}]}
+{"role":"tool","tool_call_id":"call_80aa1aa003884748bcc04442d1910e54","content":"bench-ok\n"}
+{"role":"assistant","content":"时间：2026-11-04 02:00:06  \n命令输出：`bench-ok`"}
+{"role":"user","content":"依次执行两个工具：先用 time_now 查时间，再用 exec 运行 echo bench-ok，最后汇总。"}
+{"role":"assistant","content":null,"tool_calls":[{"id":"call_21d5ba5c7488408bbda66ae94813f857","type":"function","function":{"name":"time_now","arguments":"{}"}}]}
+{"role":"tool","tool_call_id":"call_21d5ba5c7488408bbda66ae94813f857","content":"2026-11-04 02:00:13"}
+{"role":"assistant","content":null,"tool_calls":[{"id":"call_2891ceca002144ee91e024ceecc27c0f","type":"function","function":{"name":"exec","arguments":"{\"command\":\"echo bench-ok\"}"}}]}
+{"role":"tool","tool_call_id":"call_2891ceca002144ee91e024ceecc27c0f","content":"bench-ok\n"}
+{"role":"assistant","content":"时间：2026-11-04 02:00:13  \n命令输出：`bench-ok`"}
+{"role":"user","content":"依次执行两个工具：先用 time_now 查时间，再用 exec 运行 echo bench-ok，最后汇总。"}
+{"role":"assistant","content":null,"tool_calls":[{"id":"call_c0228b29c3e74715a1c045ba836bb62e","type":"function","function":{"name":"time_now","arguments":"{}"}}]}
+{"role":"tool","tool_call_id":"call_c0228b29c3e74715a1c045ba836bb62e","content":"2026-11-04 02:00:22"}
+{"role":"assistant","content":null,"tool_calls":[{"id":"call_630bb891f47e4c498791a6a3a2a2bad3","type":"function","function":{"name":"exec","arguments":"{\"command\":\"echo bench-ok\"}"}}]}
+{"role":"tool","tool_call_id":"call_630bb891f47e4c498791a6a3a2a2bad3","content":"bench-ok\n"}
+{"role":"assistant","content":"时间：2026-11-04 02:00:22  \n命令输出：`bench-ok`"}

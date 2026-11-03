@@ -7,7 +7,7 @@
 #include <dirent.h>
 #include <time.h>
 
-/* POSIX backend: libcurl (TLS included) + stdio filesystem. */
+/* POSIX backend: libcurl (rustls-free, system TLS) + stdio filesystem. */
 
 typedef struct {
     char *buf;
@@ -142,9 +142,9 @@ static size_t stream_write(char *ptr, size_t sz, size_t nm, void *vp)
 static size_t stream_header(char *ptr, size_t sz, size_t nm, void *vp)
 {
     sctx_t *s = vp;
-    if (s->status == 0 && !strncmp(ptr, "HTTP/1.", 7)) {
-        /* "HTTP/1.x NNN ..." */
-        const char *p = ptr + 7;
+    if (s->status == 0 && !strncmp(ptr, "HTTP/", 5)) {
+        /* "HTTP/1.1 200 OK" and "HTTP/2 200" both parse */
+        const char *p = ptr + 5;
         while (*p && *p != ' ')
             p++;
         while (*p == ' ')
@@ -156,7 +156,7 @@ static size_t stream_header(char *ptr, size_t sz, size_t nm, void *vp)
 
 static int http_post_stream(const char *url, const char *auth_bearer,
                             const char *body, size_t body_len,
-                            hl_line_fn on_line, void *ud,
+                            int (*on_line)(void *, const char *), void *ud,
                             char *errbuf, size_t errcap)
 {
     static int inited;
@@ -203,10 +203,57 @@ static int http_post_stream(const char *url, const char *auth_bearer,
         return -2;
     if (s.aborted)
         return -3;
-    if (rc != CURLE_OK && code == 0)
-        return -1;
+    if (rc != CURLE_OK) {
+        fprintf(stderr, "[hl] curl stream error: %s (code=%ld, got %zu bytes)\n",
+                curl_easy_strerror(rc), code, s.len);
+        if (code == 0 || s.len == 0)
+            return -1;
+        /* partial transfer: hand back whatever arrived with its status */
+        return (int)code;
+    }
     if (code == 0)
         return -1;
+    return (int)code;
+}
+
+/* ---- HTTPS GET (OTA skill sync) ---- */
+
+static int http_get(const char *url, const char *auth_bearer,
+                    char *resp, size_t resp_cap, size_t *resp_len)
+{
+    static int inited;
+    if (!inited) {
+        curl_global_init(CURL_GLOBAL_DEFAULT);
+        inited = 1;
+    }
+    rx_t rx = { resp, resp_cap, 0, 0 };
+    CURL *c = curl_easy_init();
+    if (!c)
+        return -1;
+    char auth[512];
+    snprintf(auth, sizeof auth, "Authorization: Bearer %s", auth_bearer);
+    struct curl_slist *hdrs = NULL;
+    hdrs = curl_slist_append(hdrs, auth);
+    curl_easy_setopt(c, CURLOPT_URL, url);
+    curl_easy_setopt(c, CURLOPT_HTTPHEADER, hdrs);
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, on_data);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA, &rx);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, 60L);
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 15L);
+    curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+    CURLcode rc = curl_easy_perform(c);
+    long code = 0;
+    curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
+    curl_slist_free_all(hdrs);
+    curl_easy_cleanup(c);
+    if (rc != CURLE_OK) {
+        fprintf(stderr, "[hl] curl error: %s\n", curl_easy_strerror(rc));
+        return -1;
+    }
+    if (rx.overflow)
+        return -2;
+    *resp_len = rx.len;
     return (int)code;
 }
 
@@ -269,6 +316,13 @@ static int fs_list(const char *dir, int (*cb)(void *, const char *), void *ud)
     return 0;
 }
 
+static unsigned long time_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (unsigned long)ts.tv_sec * 1000ul + (unsigned long)(ts.tv_nsec / 1000000);
+}
+
 static void delay_ms(unsigned long ms)
 {
     struct timespec ts = {
@@ -276,13 +330,6 @@ static void delay_ms(unsigned long ms)
         .tv_nsec = (long)(ms % 1000) * 1000000L,
     };
     nanosleep(&ts, NULL);
-}
-
-static unsigned long time_ms(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (unsigned long)ts.tv_sec * 1000ul + (unsigned long)(ts.tv_nsec / 1000000);
 }
 
 static void log_fn(int level, const char *msg)
@@ -294,6 +341,7 @@ static void log_fn(int level, const char *msg)
 static const hl_platform_t g_platform = {
     .http_post = http_post,
     .http_post_stream = http_post_stream,
+    .http_get = http_get,
     .fs_read = fs_read,
     .fs_write = fs_write,
     .fs_append = fs_append,

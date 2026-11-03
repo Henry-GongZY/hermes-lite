@@ -75,6 +75,15 @@ static int mock_http_post(const char *url, const char *auth, const char *body,
     (void)body_len;
     assert(n_captured < MAX_CAP);
     captured_req[n_captured++] = strdup(body);
+    /* compaction summary calls are served inline, without consuming the
+     * per-turn script */
+    if (strstr(body, "Summarize the following conversation excerpt")) {
+        snprintf(resp, cap,
+                 "{\"choices\":[{\"message\":{\"role\":\"assistant\","
+                 "\"content\":\"summary text\"}}]}");
+        *rl = strlen(resp);
+        return 200;
+    }
     if (fail_count > 0) {
         fail_count--;
         return fail_code;
@@ -594,13 +603,17 @@ static void test_history_compact(void)
     fclose(f);
     CHECK(size < 8192, "compact: file bounded (<8KB)");
 
-    /* latest turns must survive compaction */
+    /* latest turns must survive compaction; the LLM summary is the opener
+     * (the \n inside content is JSON-escaped on disk) */
     char buf[16384];
     size_t len = 0;
     hl_platform_posix()->fs_read(hpath, buf, sizeof buf - 1, &len);
     buf[len] = 0;
     CHECK(strstr(buf, "MSG5"), "compact: latest user msg kept");
     CHECK(strstr(buf, "MSG0") == NULL, "compact: oldest msg dropped");
+    CHECK(strstr(buf, "[Earlier conversation summary]") &&
+              strstr(buf, "summary text"),
+          "compact: summary opener present");
 }
 
 int main(void)

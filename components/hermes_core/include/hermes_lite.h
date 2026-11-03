@@ -40,6 +40,11 @@ typedef struct hl_platform {
                             hl_line_fn on_line, void *ud,
                             char *errbuf, size_t errcap);
 
+    /* Optional buffered HTTPS GET (used by OTA skill sync). NULL = no GET;
+     * the agent's sync feature reports "not supported". */
+    int (*http_get)(const char *url, const char *auth_bearer,
+                    char *resp, size_t resp_cap, size_t *resp_len);
+
     /* Filesystem; 0 on success, negative on error.
      * fs_read writes at most cap bytes; caller must size buf cap+1 for NUL. */
     int (*fs_read)(const char *path, char *buf, size_t cap, size_t *len);
